@@ -9,7 +9,6 @@ import (
 )
 
 func HandleConnection(conn net.Conn, h *broadcast.Hub) {
-	defer conn.Close()
 	defer h.Delete(conn)
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 4096), 64*1024)

@@ -1,9 +1,11 @@
 package broadcast
 
 import (
-	"fmt"
+	"errors"
+	"log/slog"
 	"maps"
 	"net"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -27,6 +29,7 @@ func (h *Hub) Add(client net.Conn) {
 }
 
 func (h *Hub) Delete(client net.Conn) {
+	client.Close()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.clients, client)
@@ -36,14 +39,19 @@ func (h *Hub) SendMessage(sender net.Conn, message string) {
 	h.mu.RLock()
 	snapshot := slices.Collect(maps.Keys(h.clients))
 	h.mu.RUnlock()
-	for _, v := range snapshot {
-		if v == sender {
+	for _, client := range snapshot {
+		if client == sender {
 			continue
 		}
-		v.SetWriteDeadline(time.Now().Add(time.Second * 5))
-		_, err := v.Write([]byte(message + "\n"))
+		client.SetWriteDeadline(time.Now().Add(time.Second * 5))
+		_, err := client.Write([]byte(message + "\n"))
 		if err != nil {
-			fmt.Println(err)
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				slog.Warn("write timeout, dropping client", "addr", client.RemoteAddr())
+			} else {
+				slog.Error("failed to send message", "addr", client.RemoteAddr(), "error", err)
+			}
+			h.Delete(client)
 		}
 	}
 }
