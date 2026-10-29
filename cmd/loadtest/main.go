@@ -1,11 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -13,6 +14,8 @@ import (
 	"syscall"
 	"time"
 )
+
+const maxMessageSize = 1 << 8
 
 type Config struct {
 	Addr     string
@@ -68,13 +71,36 @@ func client(ctx context.Context, cfg Config, id int) error {
 		return fmt.Errorf("Client %d failed to conn to server: %w", id, err)
 	}
 	defer conn.Close()
+
 	go func() {
-		scannerReader := bufio.NewScanner(conn)
-		for scannerReader.Scan() {
-			fmt.Println(scannerReader.Text())
-			if scannerReader.Err() != nil {
-				break
+		for {
+			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			buf := make([]byte, 4)
+			_, err := io.ReadFull(conn, buf)
+			if err != nil {
+				if errors.Is(err, os.ErrDeadlineExceeded) {
+					return
+				}
+				return
 			}
+
+			size := binary.BigEndian.Uint32(buf)
+			if size > maxMessageSize {
+				return
+			}
+			payload := make([]byte, int(size))
+
+			_, err = io.ReadFull(conn, payload)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return
+				}
+				if errors.Is(err, os.ErrDeadlineExceeded) {
+					return
+				}
+				return
+			}
+			fmt.Println(string(payload))
 		}
 	}()
 
