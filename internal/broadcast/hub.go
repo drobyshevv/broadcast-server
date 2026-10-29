@@ -1,57 +1,53 @@
 package broadcast
 
 import (
-	"errors"
-	"log/slog"
-	"maps"
 	"net"
-	"os"
-	"slices"
-	"sync"
-	"time"
+
+	"github.com/drobyshevv/broadcast-server/internal/client"
 )
 
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[net.Conn]struct{}
+	Register   chan *client.Client
+	Unregister chan *client.Client
+	Broadcast  chan BroadcastMessage
+	Clients    map[*client.Client]struct{}
+}
+
+type BroadcastMessage struct {
+	Sender  net.Conn
+	Message []byte
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		clients: make(map[net.Conn]struct{}),
+		Register:   make(chan *client.Client),
+		Unregister: make(chan *client.Client),
+		Broadcast:  make(chan BroadcastMessage),
+		Clients:    make(map[*client.Client]struct{}),
 	}
 }
 
-func (h *Hub) Add(client net.Conn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.clients[client] = struct{}{}
-}
+func (h *Hub) Run() {
+	for {
+		select {
+		case client := <-h.Register:
+			h.Clients[client] = struct{}{}
+		case client := <-h.Unregister:
+			delete(h.Clients, client)
+			close(client.Buf)
+		case br := <-h.Broadcast:
+			for cl := range h.Clients {
+				if br.Sender == cl.Conn {
+					continue
+				}
+				select {
+				case cl.Buf <- br.Message:
+				default:
+					close(cl.Buf)
+					delete(h.Clients, cl)
+				}
 
-func (h *Hub) Delete(client net.Conn) {
-	client.Close()
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.clients, client)
-}
-
-func (h *Hub) SendMessage(sender net.Conn, message string) {
-	h.mu.RLock()
-	snapshot := slices.Collect(maps.Keys(h.clients))
-	h.mu.RUnlock()
-	for _, client := range snapshot {
-		if client == sender {
-			continue
-		}
-		client.SetWriteDeadline(time.Now().Add(time.Second * 5))
-		_, err := client.Write([]byte(message + "\n"))
-		if err != nil {
-			if errors.Is(err, os.ErrDeadlineExceeded) {
-				slog.Warn("write timeout, dropping client", "addr", client.RemoteAddr())
-			} else {
-				slog.Error("failed to send message", "addr", client.RemoteAddr(), "error", err)
 			}
-			h.Delete(client)
 		}
 	}
 }
