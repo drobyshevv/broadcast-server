@@ -33,8 +33,8 @@ func HandleConnection(conn net.Conn, h *broadcast.Hub) {
 			slog.Error("read error", "addr", client.Conn.RemoteAddr(), "error", err)
 			return
 		}
-		h.Broadcast <- broadcast.BroadcastMessage{
-			Sender:  client.Conn,
+		h.Broadcast <- &broadcast.BroadcastMessage{
+			Sender:  client,
 			Message: message,
 		}
 	}

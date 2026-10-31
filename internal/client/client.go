@@ -6,21 +6,21 @@ import (
 )
 
 type Client struct {
-	Conn net.Conn
-	Buf  chan []byte
+	Conn     net.Conn
+	Outbound chan []byte
 }
 
 func NewClient(conn net.Conn) *Client {
 	cl := &Client{
-		Conn: conn,
-		Buf:  make(chan []byte, 256),
+		Conn:     conn,
+		Outbound: make(chan []byte, 256),
 	}
 	go cl.write()
 	return cl
 }
 
 func (c *Client) write() {
-	for message := range c.Buf {
+	for message := range c.Outbound {
 		header := make([]byte, 4)
 		binary.BigEndian.PutUint32(header, uint32(len(message)))
 		bf := net.Buffers{header, []byte(message)}
