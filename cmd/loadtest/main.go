@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/drobyshevv/broadcast-server/internal/protocol"
 )
 
 const maxMessageSize = 1 << 8
@@ -30,77 +31,58 @@ func main() {
 		return
 	}
 
-	wg := sync.WaitGroup{}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	var wg sync.WaitGroup
 
 	for i := 1; i <= cfg.NClients; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			client(ctx, *cfg, id)
+			if err := client(ctx, *cfg, id); err != nil {
+				fmt.Printf("client %d: %v\n", id, err)
+			}
 		}(i)
 	}
 
 	done := make(chan struct{})
-
 	go func() {
-		defer close(done)
 		wg.Wait()
+		close(done)
 	}()
 
 	sig, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	<-sig.Done()
-	stop()
-	cancel()
-
 	select {
 	case <-done:
-		fmt.Println("server has shut down correctly")
-	case <-time.After(time.Second * 10):
-		os.Exit(0)
+		fmt.Println("all clients finished")
+	case <-sig.Done():
+		cancel()
+		select {
+		case <-done:
+			fmt.Println("loadtest stopped")
+		case <-time.After(10 * time.Second):
+			fmt.Println("loadtest shutdown timeout")
+		}
 	}
 }
 
 func client(ctx context.Context, cfg Config, id int) error {
 	conn, err := net.Dial("tcp", cfg.Addr)
 	if err != nil {
-		return fmt.Errorf("Client %d failed to conn to server: %w", id, err)
+		return fmt.Errorf("failed to connect: %w", err)
 	}
 	defer conn.Close()
 
+	shutdown := make(chan struct{})
+	readDone := make(chan struct{})
+
 	go func() {
-		for {
-			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-			buf := make([]byte, 4)
-			_, err := io.ReadFull(conn, buf)
-			if err != nil {
-				if errors.Is(err, os.ErrDeadlineExceeded) {
-					return
-				}
-				return
-			}
-
-			size := binary.BigEndian.Uint32(buf)
-			if size > maxMessageSize {
-				return
-			}
-			payload := make([]byte, int(size))
-
-			_, err = io.ReadFull(conn, payload)
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return
-				}
-				if errors.Is(err, os.ErrDeadlineExceeded) {
-					return
-				}
-				return
-			}
-			fmt.Println(string(payload))
+		defer close(readDone)
+		if err := readMessages(conn, shutdown); err != nil {
+			fmt.Printf("client %d read: %v\n", id, err)
 		}
 	}()
 
@@ -110,17 +92,80 @@ func client(ctx context.Context, cfg Config, id int) error {
 	defer stop()
 
 	for i := 1; i <= cfg.Messages; i++ {
-		message := fmt.Sprintf("client %d | message %d", id, i)
-		header := make([]byte, 4)
-		binary.BigEndian.PutUint32(header, uint32(len(message)))
-		bf := net.Buffers{header, []byte(message)}
-		_, err := bf.WriteTo(conn)
-		if err != nil {
-			return fmt.Errorf("failed to send message: %w, client %d | message %d", err, id, i)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-shutdown:
+			return nil
+		default:
 		}
+
+		message := []byte(fmt.Sprintf("client %d | message %d", id, i))
+
+		if err := writeMessage(conn, protocol.MessageTypeChat, message); err != nil {
+			return fmt.Errorf("failed to send message %d: %w", i, err)
+		}
+
 		time.Sleep(cfg.Delay)
 	}
+
+	select {
+	case <-readDone:
+	case <-ctx.Done():
+		return nil
+	}
+
 	return nil
+}
+
+func readMessages(conn net.Conn, shutdown chan<- struct{}) error {
+	for {
+		var header [5]byte
+		if _, err := io.ReadFull(conn, header[:]); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("failed to read header: %w", err)
+		}
+
+		messageType := protocol.MessageType(int8(header[0]))
+		size := binary.BigEndian.Uint32(header[1:])
+
+		if size > maxMessageSize {
+			return fmt.Errorf("message too large: %d", size)
+		}
+
+		payload := make([]byte, int(size))
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			return fmt.Errorf("failed to read payload: %w", err)
+		}
+
+		switch messageType {
+		case protocol.MessageTypeChat:
+			fmt.Println(string(payload))
+
+		case protocol.MessageTypeShutdown:
+			if err := writeMessage(conn, protocol.MessageTypeACK, nil); err != nil {
+				return fmt.Errorf("failed to send ACK: %w", err)
+			}
+
+			close(shutdown)
+			return nil
+
+		default:
+			return fmt.Errorf("unknown message type: %d", messageType)
+		}
+	}
+}
+
+func writeMessage(conn net.Conn, messageType protocol.MessageType, payload []byte) error {
+	var header [5]byte
+	header[0] = byte(messageType)
+	binary.BigEndian.PutUint32(header[1:], uint32(len(payload)))
+
+	bf := net.Buffers{header[:], payload}
+	_, err := bf.WriteTo(conn)
+	return err
 }
 
 func loadCfg() *Config {
@@ -129,21 +174,13 @@ func loadCfg() *Config {
 	var delay time.Duration
 	var messages int
 
-	flag.StringVar(&addr, "addr", "", "")
-	flag.IntVar(&nClients, "clients", 0, "")
-	flag.DurationVar(&delay, "delay", time.Millisecond, "")
-	flag.IntVar(&messages, "messages", 1, "")
+	flag.StringVar(&addr, "addr", "localhost:8082", "server address")
+	flag.IntVar(&nClients, "clients", 1, "number of clients")
+	flag.DurationVar(&delay, "delay", time.Millisecond, "delay between messages")
+	flag.IntVar(&messages, "messages", 1, "messages per client")
 	flag.Parse()
-	if addr == "" {
-		return nil
-	}
-	if nClients == 0 {
-		return nil
-	}
-	if delay < time.Microsecond {
-		return nil
-	}
-	if messages < 1 {
+
+	if addr == "" || nClients < 1 || delay < time.Microsecond || messages < 1 {
 		return nil
 	}
 
