@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/drobyshevv/broadcast-server/internal/broadcast"
 	"github.com/drobyshevv/broadcast-server/internal/handler"
@@ -30,13 +36,44 @@ func main() {
 	hub := broadcast.NewHub()
 	go hub.Run()
 
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			slog.Error("failed to accept connection", "error", err)
-			continue
+	wg := &sync.WaitGroup{}
+
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				slog.Error("failed to accept connection", "error", err)
+				continue
+			}
+			slog.Info("new client connected", "addr", conn.RemoteAddr())
+			wg.Add(1)
+			go handler.HandleConnection(wg, conn, hub)
 		}
-		slog.Info("new client connected", "addr", conn.RemoteAddr())
-		go handler.HandleConnection(conn, hub)
+	}()
+
+	sig, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	<-sig.Done()
+	l.Close()
+
+	hub.Shutdown <- struct{}{}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		<-hub.Done
+		slog.Info("server has shut down correctly")
+	case <-time.After(time.Second * 10):
+		slog.Error("graceful shutdown timeout")
+		os.Exit(0)
 	}
 }
