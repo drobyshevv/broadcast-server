@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/drobyshevv/broadcast-server/internal/broadcast"
 	"github.com/drobyshevv/broadcast-server/internal/client"
@@ -19,26 +20,34 @@ const maxMessageSize = 1 << 8
 
 func HandleConnection(wg *sync.WaitGroup, conn net.Conn, h *broadcast.Hub) {
 	defer wg.Done()
+
 	client := client.NewClient(conn)
 	h.Register <- client
 	defer func() { h.Unregister <- client }()
+
 	for {
 		messageType, message, err := readMessage(client.Conn)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				slog.Info("client disconnected grasefully", "addr", client.Conn.RemoteAddr())
-				return
+			switch {
+			case errors.Is(err, io.EOF):
+				slog.Info("client disconnected", "addr", conn.RemoteAddr())
+
+			case errors.Is(err, os.ErrDeadlineExceeded):
+				slog.Warn("client read timeout", "addr", conn.RemoteAddr())
+
+			case errors.Is(err, io.ErrUnexpectedEOF):
+				slog.Warn("incomplete message", "addr", conn.RemoteAddr(), "error", err)
+
+			default:
+				slog.Error("failed to read message", "addr", conn.RemoteAddr(), "error", err)
 			}
-			if errors.Is(err, os.ErrDeadlineExceeded) {
-				slog.Error("read timeout", "addr", client.Conn.RemoteAddr())
-				return
-			}
-			slog.Error("read error", "addr", client.Conn.RemoteAddr(), "error", err)
 			return
 		}
+
 		if messageType == protocol.MessageTypeACK {
 			break
 		}
+
 		h.Broadcast <- &broadcast.BroadcastEvent{
 			Sender:  client,
 			Message: protocol.NewMessage(messageType, message),
@@ -47,32 +56,35 @@ func HandleConnection(wg *sync.WaitGroup, conn net.Conn, h *broadcast.Hub) {
 }
 
 func readMessage(conn net.Conn) (protocol.MessageType, []byte, error) {
-	const op = "handler.readMessage"
-	buf := make([]byte, 5)
-	_, err := io.ReadFull(conn, buf)
+	var header [5]byte
+	_, err := io.ReadFull(conn, header[:])
 	if err != nil {
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			return 0, nil, fmt.Errorf("%s read timeout: %w", op, err)
+		if errors.Is(err, io.EOF) {
+			return 0, nil, io.EOF
 		}
-		return 0, nil, fmt.Errorf("%s: %w", op, err)
+		return 0, nil, fmt.Errorf("failed to read header: %w", err)
 	}
 
-	messageType := protocol.MessageType(int8(buf[0]))
-	size := binary.BigEndian.Uint32(buf[1:])
+	messageType := protocol.MessageType(int8(header[0]))
+	size := binary.BigEndian.Uint32(header[1:])
 	if size > maxMessageSize {
-		return 0, nil, fmt.Errorf("%s: message to large", op)
+		return 0, nil, fmt.Errorf("message too large")
 	}
 	payload := make([]byte, int(size))
 
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		return 0, nil, fmt.Errorf("failed to set read deadline: %w", err)
+	}
 	_, err = io.ReadFull(conn, payload)
 	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return messageType, payload, nil
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return 0, nil, fmt.Errorf("incomplete payload: %w", io.ErrUnexpectedEOF)
 		}
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			return 0, nil, fmt.Errorf("%s read timeout: %w", op, err)
+			return 0, nil, fmt.Errorf("read payload timeout: %w", err)
 		}
-		return 0, nil, fmt.Errorf("%s failed to read payload: %w", op, err)
+
+		return 0, nil, fmt.Errorf("failed to read payload: %w", err)
 	}
 	return messageType, payload, nil
 }
