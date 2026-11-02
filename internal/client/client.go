@@ -3,27 +3,33 @@ package client
 import (
 	"encoding/binary"
 	"net"
+	"time"
+
+	"github.com/drobyshevv/broadcast-server/internal/protocol"
 )
 
 type Client struct {
 	Conn     net.Conn
-	Outbound chan []byte
+	Outbound chan *protocol.Message
 }
 
 func NewClient(conn net.Conn) *Client {
 	cl := &Client{
 		Conn:     conn,
-		Outbound: make(chan []byte, 256),
+		Outbound: make(chan *protocol.Message, 256),
 	}
 	go cl.write()
 	return cl
 }
 
 func (c *Client) write() {
+	defer c.Conn.Close()
 	for message := range c.Outbound {
+		typeByte := []byte{byte(message.Type)}
 		header := make([]byte, 4)
-		binary.BigEndian.PutUint32(header, uint32(len(message)))
-		bf := net.Buffers{header, []byte(message)}
+		binary.BigEndian.PutUint32(header, uint32(len(message.Payload)))
+		bf := net.Buffers{typeByte, header, message.Payload}
+		c.Conn.SetWriteDeadline(time.Now().Add(time.Second * 3))
 		bf.WriteTo(c.Conn)
 	}
 }

@@ -2,6 +2,7 @@ package broadcast
 
 import (
 	"github.com/drobyshevv/broadcast-server/internal/client"
+	"github.com/drobyshevv/broadcast-server/internal/protocol"
 )
 
 type MessageBuffer struct {
@@ -24,7 +25,7 @@ func (b *MessageBuffer) ReplayTo(client *client.Client) {
 		curr = b.next
 	}
 	for i := 0; i < b.size; i++ {
-		client.Outbound <- b.buffer[curr]
+		client.Outbound <- protocol.NewMessage(protocol.MessageTypeChat, b.buffer[curr])
 		curr = (curr + 1) % len(b.buffer)
 	}
 }
