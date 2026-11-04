@@ -29,7 +29,14 @@ func (c *Client) write() {
 		header := make([]byte, 4)
 		binary.BigEndian.PutUint32(header, uint32(len(message.Payload)))
 		bf := net.Buffers{typeByte, header, message.Payload}
-		c.Conn.SetWriteDeadline(time.Now().Add(time.Second * 3))
-		bf.WriteTo(c.Conn)
+		if err := c.Conn.SetWriteDeadline(time.Now().Add(time.Second * 3)); err != nil {
+			return
+		}
+		if _, err := bf.WriteTo(c.Conn); err != nil {
+			return
+		}
+		if err := c.Conn.SetWriteDeadline(time.Time{}); err != nil {
+			return
+		}
 	}
 }

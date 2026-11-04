@@ -86,5 +86,8 @@ func readMessage(conn net.Conn) (protocol.MessageType, []byte, error) {
 
 		return 0, nil, fmt.Errorf("failed to read payload: %w", err)
 	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return 0, nil, fmt.Errorf("failed to reset read deadline: %w", err)
+	}
 	return messageType, payload, nil
 }
