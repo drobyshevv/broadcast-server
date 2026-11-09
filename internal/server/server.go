@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -10,14 +10,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/drobyshevv/broadcast-server/internal/broadcast"
-	"github.com/drobyshevv/broadcast-server/internal/handler"
 )
 
 const addr = "localhost:8082"
 
-func main() {
+func RunServer() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
@@ -33,8 +30,8 @@ func main() {
 	defer l.Close()
 
 	slog.Info("server is ready to accept connections")
-	hub := broadcast.NewHub()
-	go hub.Run()
+	hub := newHub()
+	go hub.run()
 
 	wg := &sync.WaitGroup{}
 
@@ -50,7 +47,7 @@ func main() {
 			}
 			slog.Info("new client connected", "addr", conn.RemoteAddr())
 			wg.Add(1)
-			go handler.HandleConnection(wg, conn, hub)
+			go handleConnection(wg, conn, hub)
 		}
 	}()
 
@@ -60,7 +57,7 @@ func main() {
 	<-sig.Done()
 	l.Close()
 
-	close(hub.Shutdown)
+	close(hub.shutdown)
 
 	done := make(chan struct{})
 	go func() {
@@ -70,7 +67,7 @@ func main() {
 
 	select {
 	case <-done:
-		<-hub.Done
+		<-hub.done
 		slog.Info("server has shut down correctly")
 	case <-time.After(time.Second * 10):
 		slog.Error("graceful shutdown timeout")

@@ -1,4 +1,4 @@
-package handler
+package server
 
 import (
 	"encoding/binary"
@@ -11,22 +11,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/drobyshevv/broadcast-server/internal/broadcast"
-	"github.com/drobyshevv/broadcast-server/internal/client"
 	"github.com/drobyshevv/broadcast-server/internal/protocol"
 )
 
 const maxMessageSize = 1 << 8
 
-func HandleConnection(wg *sync.WaitGroup, conn net.Conn, h *broadcast.Hub) {
+func handleConnection(wg *sync.WaitGroup, conn net.Conn, h *hub) {
 	defer wg.Done()
 
-	client := client.NewClient(conn)
-	h.Register <- client
-	defer func() { h.Unregister <- client }()
+	client := NewClient(conn)
+	h.register <- client
+	defer func() { h.unregister <- client }()
 
 	for {
-		messageType, message, err := readMessage(client.Conn)
+		messageType, message, err := readMessage(client.conn)
 		if err != nil {
 			switch {
 			case errors.Is(err, io.EOF):
@@ -48,9 +46,9 @@ func HandleConnection(wg *sync.WaitGroup, conn net.Conn, h *broadcast.Hub) {
 			break
 		}
 
-		h.Broadcast <- &broadcast.BroadcastEvent{
-			Sender:  client,
-			Message: protocol.NewMessage(messageType, message),
+		h.broadcast <- &broadcastEvent{
+			sender:  client,
+			message: protocol.NewMessage(messageType, message),
 		}
 	}
 }

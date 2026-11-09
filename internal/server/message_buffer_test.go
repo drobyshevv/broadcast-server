@@ -1,15 +1,14 @@
-package broadcast
+package server
 
 import (
 	"testing"
 
-	"github.com/drobyshevv/broadcast-server/internal/client"
 	"github.com/drobyshevv/broadcast-server/internal/protocol"
 	"github.com/stretchr/testify/require"
 )
 
 func TestAdd(t *testing.T) {
-	mb := NewMessageBuffer()
+	mb := newMessageBuffer()
 
 	messages := [][]byte{
 		{10, 29},
@@ -25,7 +24,7 @@ func TestAdd(t *testing.T) {
 	}
 
 	for _, message := range messages {
-		mb.Add(message)
+		mb.add(message)
 	}
 
 	require.Equal(t, 10, mb.size)
@@ -33,10 +32,10 @@ func TestAdd(t *testing.T) {
 }
 
 func TestAddOverflow(t *testing.T) {
-	mb := NewMessageBuffer()
+	mb := newMessageBuffer()
 
 	for i := 0; i < 20; i++ {
-		mb.Add([]byte{byte(i)})
+		mb.add([]byte{byte(i)})
 	}
 
 	require.Equal(t, 10, mb.size)
@@ -44,79 +43,79 @@ func TestAddOverflow(t *testing.T) {
 }
 
 func TestAddHeadWrapAround(t *testing.T) {
-	mb := NewMessageBuffer()
+	mb := newMessageBuffer()
 
 	for i := 0; i < 10; i++ {
-		mb.Add([]byte{byte(i)})
+		mb.add([]byte{byte(i)})
 	}
 
 	require.Equal(t, 0, mb.next)
 
-	mb.Add([]byte{100})
+	mb.add([]byte{100})
 
 	require.Equal(t, 1, mb.next)
 
-	mb.Add([]byte{101})
+	mb.add([]byte{101})
 
 	require.Equal(t, 2, mb.next)
 }
 
 func TestReplayTo(t *testing.T) {
-	mb := NewMessageBuffer()
+	mb := newMessageBuffer()
 
 	for i := 0; i < 10; i++ {
-		mb.Add([]byte{byte(i)})
+		mb.add([]byte{byte(i)})
 	}
 
-	c := &client.Client{
-		Outbound: make(chan *protocol.Message, 10),
+	c := &client{
+		outbound: make(chan *protocol.Message, 10),
 	}
 
-	mb.ReplayTo(c)
+	mb.replayTo(c)
 
-	assertMessages(t, c.Outbound, 0, 10)
+	assertMessages(t, c.outbound, 0, 10)
 }
 
 func TestReplayToAfterOverflow(t *testing.T) {
-	mb := NewMessageBuffer()
+	mb := newMessageBuffer()
 
 	for i := 0; i < 15; i++ {
-		mb.Add([]byte{byte(i)})
+		mb.add([]byte{byte(i)})
 	}
 
-	c := &client.Client{
-		Outbound: make(chan *protocol.Message, 10),
+	c := &client{
+		outbound: make(chan *protocol.Message, 10),
 	}
 
-	mb.ReplayTo(c)
+	mb.replayTo(c)
 
-	assertMessages(t, c.Outbound, 5, 15)
+	assertMessages(t, c.outbound, 5, 15)
 }
 
 func TestReplayToEmpty(t *testing.T) {
-	mb := NewMessageBuffer()
+	mb := newMessageBuffer()
 
-	c := &client.Client{
-		Outbound: make(chan *protocol.Message, 10),
+	c := &client{
+		outbound: make(chan *protocol.Message, 10),
 	}
 
-	mb.ReplayTo(c)
+	mb.replayTo(c)
 
-	require.Empty(t, c.Outbound)
+	require.Empty(t, c.outbound)
 }
 
 func TestReplayToPartialBuffer(t *testing.T) {
-	mb := NewMessageBuffer()
+	mb := newMessageBuffer()
 
 	for _, value := range []byte{10, 20, 30} {
-		mb.Add([]byte{value})
+		mb.add([]byte{value})
 	}
 
-	c := &client.Client{
-		Outbound: make(chan *protocol.Message, 10),
+	c := &client{
+		outbound: make(chan *protocol.Message, 10),
 	}
 
-	mb.ReplayTo(c)
+	mb.replayTo(c)
 
 	expected := [][]byte{
 		{10},
@@ -125,12 +124,12 @@ func TestReplayToPartialBuffer(t *testing.T) {
 	}
 
 	for _, want := range expected {
-		msg := <-c.Outbound
+		msg := <-c.outbound
 		require.Equal(t, protocol.MessageTypeChat, msg.Type)
 		require.Equal(t, want, msg.Payload)
 	}
 
-	require.Empty(t, c.Outbound)
+	require.Empty(t, c.outbound)
 }
 
 func assertMessages(t *testing.T, ch <-chan *protocol.Message, start, end int) {
