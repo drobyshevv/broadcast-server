@@ -66,7 +66,12 @@ func (h *Hub) Run() {
 			}
 		case <-h.Shutdown:
 			for cl := range h.Clients {
-				cl.Outbound <- protocol.NewMessage(protocol.MessageTypeShutdown, []byte{})
+				select {
+				case cl.Outbound <- protocol.NewMessage(protocol.MessageTypeShutdown, []byte{}):
+				default:
+					close(cl.Outbound)
+					delete(h.Clients, cl)
+				}
 			}
 			h.Shutdown = nil
 

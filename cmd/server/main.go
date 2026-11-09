@@ -60,7 +60,7 @@ func main() {
 	<-sig.Done()
 	l.Close()
 
-	hub.Shutdown <- struct{}{}
+	close(hub.Shutdown)
 
 	done := make(chan struct{})
 	go func() {
