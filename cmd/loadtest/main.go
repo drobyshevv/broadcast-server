@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -44,6 +45,28 @@ func main() {
 		startTime:     time.Now(),
 	}
 
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Println()
+				return
+			case <-ticker.C:
+				fmt.Printf("\033[H")
+
+				fmt.Printf("\033[K\033[32m Sent:     %d\033[0m\n", atomic.LoadUint64(&st.totalSent))
+				fmt.Printf("\033[K\033[34m Received: %d\033[0m\n", atomic.LoadUint64(&st.totalReceived))
+				fmt.Printf("\033[K\033[31m Errors:   %d\033[0m\n", atomic.LoadUint64(&st.totalErrors))
+				fmt.Printf("\033[K\033[33m Time:     %.2fs\033[0m\n", time.Since(st.startTime).Seconds())
+
+				fmt.Printf("\033[J")
+			}
+		}
+	}()
+
 	for i := 1; i <= cfg.NClients; i++ {
 		wg.Add(1)
 		go func() {
@@ -64,7 +87,7 @@ func main() {
 
 	select {
 	case <-done:
-		fmt.Println("all clients finished")
+		fmt.Println("\nall clients finished")
 	case <-sig.Done():
 		cancel()
 		select {
@@ -75,10 +98,6 @@ func main() {
 		}
 	}
 
-	fmt.Println("totalSent", st.totalSent)
-	fmt.Println("totalReceived", st.totalReceived)
-	fmt.Println("totalErrors", st.totalErrors)
-	fmt.Println("time", time.Since(st.startTime).Seconds())
 }
 
 func loadCfg() *config {
