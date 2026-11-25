@@ -35,7 +35,10 @@ func RunServer() {
 
 	wg := &sync.WaitGroup{}
 
+	acceptDone := make(chan struct{})
+
 	go func() {
+		defer close(acceptDone)
 		for {
 			conn, err := l.Accept()
 			if err != nil {
@@ -55,7 +58,10 @@ func RunServer() {
 	defer stop()
 
 	<-sig.Done()
+
 	l.Close()
+
+	<-acceptDone
 
 	close(hub.shutdown)
 
