@@ -2,6 +2,8 @@
 
 A TCP broadcast messaging server with an interactive client and a load testing utility.
 
+> Project task: [Broadcast Server – roadmap.sh](https://roadmap.sh/projects/broadcast-server)
+
 ## Project Structure
 
 ```text
